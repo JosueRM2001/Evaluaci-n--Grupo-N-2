@@ -20,6 +20,10 @@ from langchain.llms import OpenAI
 from langchain.callbacks import get_openai_callback  
 # Importa el módulo langchain
 import langchain
+# Importa BeautifulSoup para manipular HTML
+from bs4 import BeautifulSoup
+# Importa el módulo selenium para la automatización del navegador Chrome
+from selenium import webdriver
 
 # Desactiva la salida detallada de la biblioteca langchain
 langchain.verbose = False  
@@ -29,37 +33,40 @@ load_dotenv()
 
 # Función para procesar el texto extraído de un archivo PDF
 def process_text(text):
-  # Divide el texto en trozos usando langchain
-  text_splitter = CharacterTextSplitter(
-    separator="\n",
-    chunk_size=1000,
-    chunk_overlap=200,
-    length_function=len
-  )
+    # Divide el texto en trozos usando langchain
+    text_splitter = CharacterTextSplitter(
+        separator="\n",
+        chunk_size=1000,
+        chunk_overlap=200,
+        length_function=len
+    )
 
-  chunks = text_splitter.split_text(text)
+    chunks = text_splitter.split_text(text)
+    # Verifica si hay trozos de texto antes de procesarlos
+    if not chunks:
+        return None
+    # Convierte los trozos de texto en incrustaciones para formar una base de conocimientos
+    embeddings = OpenAIEmbeddings(openai_api_key=os.environ.get("OPENAI_API_KEY"))
+    if not embeddings:
+        return None
+    knowledge_base = FAISS.from_texts(chunks, embeddings)
 
-  # Convierte los trozos de texto en incrustaciones para formar una base de conocimientos
-  embeddings = OpenAIEmbeddings(openai_api_key=os.environ.get("OPENAI_API_KEY"))
-
-  knowledge_base = FAISS.from_texts(chunks, embeddings)
-
-  return knowledge_base
+    return knowledge_base
 
 # Función principal de la aplicación
 def main():
-  st.title("Preguntas a un PDF")  # Establece el título de la aplicación
+    st.title("Preguntas a un PDF o HTML/RSS")
 
-  pdf = st.file_uploader("Sube tu archivo PDF", type="pdf")  # Crea un cargador de archivos para subir archivos PDF
-
-  if pdf is not None:
-    pdf_reader = PdfReader(pdf)
-    
-    # Almacena el texto del PDF en una variable
+    html_files = st.file_uploader("Sube tus archivos HTML", type="html", accept_multiple_files=True)
+    rss_files = st.file_uploader("Sube tus archivos RSS", type="rss", accept_multiple_files=True) 
     text = ""
 
-    for page in pdf_reader.pages:
-      text += page.extract_text()
+    for file_list, parser in [(html_files, 'html.parser'), (rss_files, 'xml')]:
+        if file_list is not None:
+            for file in file_list:
+                content = file.read().decode("utf-8")
+                soup = BeautifulSoup(content, parser)
+                text += soup.get_text(separator="\n", strip=True)
 
     # Crea un objeto de base de conocimientos a partir del texto del PDF
     knowledgeBase = process_text(text)
@@ -71,29 +78,29 @@ def main():
     cancel_button = st.button('Cancelar')
 
     if cancel_button:
-      st.stop()  # Detiene la ejecución de la aplicación
+        st.stop()  # Detiene la ejecución de la aplicación
 
     if query:
-      # Realiza una búsqueda de similitud en la base de conocimientos
-      docs = knowledgeBase.similarity_search(query)
+        # Realiza una búsqueda de similitud en la base de conocimientos
+        docs = knowledgeBase.similarity_search(query)
 
-      # Inicializa un modelo de lenguaje de OpenAI y ajustamos sus parámetros
+        # Inicializa un modelo de lenguaje de OpenAI y ajustamos sus parámetros
+        model = "gpt-3.5-turbo-instruct"  # Acepta 4096 tokens
+        temperature = 0  # Valores entre 0 - 1
 
-      model = "gpt-3.5-turbo-instruct" # Acepta 4096 tokens
-      temperature = 0  # Valores entre 0 - 1
+        llm = OpenAI(openai_api_key=os.environ.get("OPENAI_API_KEY"), model_name=model, temperature=temperature)
 
-      llm = OpenAI(openai_api_key=os.environ.get("OPENAI_API_KEY"), model_name=model, temperature=temperature)
+        # Carga la cadena de preguntas y respuestas
+        chain = load_qa_chain(llm, chain_type="stuff")
 
-      # Carga la cadena de preguntas y respuestas
-      chain = load_qa_chain(llm, chain_type="stuff")
+        # Obtiene la realimentación de OpenAI para el procesamiento de la cadena
+        with get_openai_callback() as cost:
+            response = chain.invoke(input={"question": query, "input_documents": docs})
+            print(cost)  # Imprime el costo de la operación
 
-      # Obtiene la realimentación de OpenAI para el procesamiento de la cadena
-      with get_openai_callback() as cost:
-        response = chain.invoke(input={"question": query, "input_documents": docs})
-        print(cost)  # Imprime el costo de la operación
-
-        st.write(response["output_text"])  # Muestra el texto de salida de la cadena de preguntas y respuestas en la aplicación
+            st.write(response["output_text"])  # Muestra el texto de salida de la cadena de preguntas y respuestas en la aplicación
 
 # Punto de entrada para la ejecución del programa
 if __name__ == "__main__":
-  main()  # Llama a la función principal
+    main()  # Llama a la función principal
+
